@@ -1,0 +1,64 @@
+{
+  "summary": "End-to-end backend + frontend testing of PlacementIQ. Wrote 32 pytest tests covering auth (login, verify, forgot/reset, cross-role, role isolation, disable/enable), coordinator scoping (CS-only, out-of-scope 403, consent gating), coordinator jobs/readiness/recommend/audit, student profile/assessments/skill-gap/resume/apply, admin stats/institutions/users/audit, and rate limiting. All 32 pytest tests pass. Playwright UI smoke test verified landing page (3 role links), coordinator dashboard (Tara Bhat excluded), admin dashboard (stat cards), student dashboard, and cross-role login rejection.",
+  "backend_issues": {
+    "critical": [],
+    "minor": [
+      {
+        "endpoint": "POST /api/auth/reset-password",
+        "issue": "After a successful password reset the code calls db.login_attempts.delete_many({}) which wipes lockout counters for ALL users, not just the one whose password was reset. A malicious actor could reset their own throwaway account to erase lockouts protecting other accounts on the same IP. Scope the delete to the affected user's identifier(s)."
+      },
+      {
+        "endpoint": "POST /api/auth/login (rate limiting)",
+        "issue": "Rate-limit identifier uses request.client.host which behind the k8s ingress is the ingress pod IP (not the real client). With multiple ingress pods, a single client's failed logins are split across identifiers so ~5x more attempts are needed before any single identifier reaches the 5-fail threshold. Read client IP from X-Forwarded-For (first non-private hop) so the per-user lockout is truly per-client. Observed empirically: pods 10.49.136.2 and 10.49.136.6 each accumulated counts independently."
+      },
+      {
+        "endpoint": "GET /api/auth/institutions",
+        "issue": "Returns is_active-filtered institutions but any active institution created via admin (even inactive test fixtures with is_active=True) is instantly exposed. Consider soft-hiding TEST_-prefixed items in prod-facing responses (minor)."
+      }
+    ]
+  },
+  "frontend_issues": {
+    "ui_bugs": [],
+    "integration_issues": [],
+    "design_issues": [
+      {
+        "screen": "Landing hero (/)",
+        "issues": [
+          "Very low contrast: hero heading 'Know the gap. Close the gap. Get placed.' and body copy render in a pale grey against a near-white background - fails WCAG AA readability.",
+          "Primary CTA 'Create student account' and secondary 'Register as coordinator' buttons look washed out/semi-transparent; primary CTA needs a solid contrasting fill.",
+          "Header nav 'STUDENT / COORDINATOR / ADMIN' links use low-contrast muted grey - hard to see on white."
+        ]
+      }
+    ]
+  },
+  "test_report_links": [
+    "/app/backend/tests/backend_test.py",
+    "/app/test_reports/pytest/pytest_results.xml"
+  ],
+  "action_items": [
+    "Scope db.login_attempts.delete_many in reset-password to only the affected user (e.g. filter by identifier suffix or user_id).",
+    "Fix rate-limit identifier to use the true client IP (X-Forwarded-For) so lockouts aren't diluted across ingress pods.",
+    "Improve landing page color contrast on hero text and CTAs (WCAG AA)."
+  ],
+  "critical_code_review_comments": [
+    "reset_password wipes login_attempts globally - security regression risk.",
+    "Rate limit is effectively ~25 attempts in the K8s preview because ingress pod IP is used as client IP.",
+    "Coordinator recommend endpoint doesn't require consent (scoped_profile enforces consent, so it's fine - good).",
+    "resume-view relies on signed JWT with 5-min TTL and file_id in payload only; anyone with the token can download regardless of role. Acceptable given short TTL but consider binding token to viewer role/user_id for defense in depth.",
+    "Coordinator /api/coordinator/students hides email/cgpa/score when share_consent=false but still returns name and department. That is intentional per spec, ok.",
+    "No Pydantic length constraint on ProfileUpdate.skills or CoordinatorNote - minor input hardening opportunity."
+  ],
+  "updated_files": [
+    "/app/backend/tests/backend_test.py"
+  ],
+  "success_rate": {
+    "backend": "100% (32/32 pytest tests)",
+    "frontend": "100% (5/5 smoke checks: landing, coord login+scope, admin login, student login, cross-role rejection)"
+  },
+  "test_credentials": "Uses /app/memory/test_credentials.md as-is. No demo accounts modified. Rate-limit test uses throwaway_<uuid>@nit.edu emails.",
+  "seed_data_creation": "Test creates TEST_-prefixed institutions and jobs plus disposable student/coordinator accounts (via register endpoint). No cleanup was done - all new records use TEST_ or throwaway_ prefixes. Coordinator (priya.sharma@nit.edu) is left ENABLED (test_disable_and_reenable_coordinator re-enables at the end).",
+  "retest_needed": false,
+  "should_main_agent_self_test": true,
+  "context_for_next_testing_agent": "backend_test.py is comprehensive (32 tests). Run with: REACT_APP_BACKEND_URL=<url> pytest backend/tests/backend_test.py -n 0. Rate-limit test uses a throwaway email so demo accounts stay unlocked. If you ever lock demo accounts, run: mongosh test_database --eval 'db.login_attempts.deleteMany({})'. Two backend hardening items are open (see action_items) - they don't block the demo but should be addressed before prod. Landing page has visible contrast issues.",
+  "rca of the issue": "N/A - no failing tests. The two backend hardening findings are RCA-noted inline in backend_issues.minor."
+}
